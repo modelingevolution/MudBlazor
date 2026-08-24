@@ -1,0 +1,64 @@
+@using System.Collections.Specialized
+@using System.ComponentModel
+
+<MudTable T="Item" Items="Source" AutoReloadOnCollectionChanged="AutoReloadOnCollectionChanged" AutoReloadOnItemPropertyChanged="AutoReloadOnItemPropertyChanged">
+    <HeaderContent>
+        <MudTh>Name</MudTh>
+    </HeaderContent>
+    <RowTemplate>
+        <MudTd>@context.Name</MudTd>
+    </RowTemplate>
+</MudTable>
+
+@code {
+    public static string __description__ = "AutoReloadOnCollectionChanged / AutoReloadOnItemPropertyChanged re-render the table from INotifyCollectionChanged / INotifyPropertyChanged without reassigning Items.";
+
+    [Parameter] public bool AutoReloadOnCollectionChanged { get; set; }
+    [Parameter] public bool AutoReloadOnItemPropertyChanged { get; set; }
+    [Parameter] public TrackedCollection Source { get; set; } = new() { new Item("a"), new Item("b"), new Item("c") };
+
+    /// <summary>An item that counts its PropertyChanged subscribers so tests can prove unsubscription.</summary>
+    public sealed class Item(string name) : INotifyPropertyChanged
+    {
+        private string _name = name;
+        private PropertyChangedEventHandler? _propertyChanged;
+
+        public int SubscriberCount { get; private set; }
+
+        public string Name
+        {
+            get => _name;
+            set
+            {
+                _name = value;
+                _propertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Name)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged
+        {
+            add { _propertyChanged += value; SubscriberCount++; }
+            remove { _propertyChanged -= value; SubscriberCount--; }
+        }
+    }
+
+    /// <summary>An ObservableCollection that counts its CollectionChanged subscribers.</summary>
+    public sealed class TrackedCollection : System.Collections.ObjectModel.ObservableCollection<Item>, INotifyCollectionChanged
+    {
+        private NotifyCollectionChangedEventHandler? _handler;
+
+        public int SubscriberCount { get; private set; }
+
+        event NotifyCollectionChangedEventHandler? INotifyCollectionChanged.CollectionChanged
+        {
+            add { _handler += value; SubscriberCount++; }
+            remove { _handler -= value; SubscriberCount--; }
+        }
+
+        protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+        {
+            base.OnCollectionChanged(e);
+            _handler?.Invoke(this, e);
+        }
+    }
+}

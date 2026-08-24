@@ -1,4 +1,6 @@
-﻿using System.Diagnostics.CodeAnalysis;
+﻿using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
@@ -30,6 +32,12 @@ namespace MudBlazor
         private bool _currentRenderFilteredItemsCached;
         private CancellationTokenSource? _cancellationTokenSrc;
         private TableData<T> _serverData = new() { TotalItems = 0, Items = [] };
+        private INotifyCollectionChanged? _observedCollection;
+        private readonly HashSet<INotifyPropertyChanged> _observedItems = new(ReferenceEqualityComparer.Instance);
+        private int _autoReloadScheduled;
+        private int _autoReloadRender;
+        private int _autoReloadResync;
+        private bool _disposed;
 
         [MemberNotNullWhen(true, nameof(_preEditSort))]
         private bool HasPreEditSort => _preEditSort is not null;
@@ -239,6 +247,32 @@ namespace MudBlazor
                 }
             }
         }
+
+        /// <summary>
+        /// Re-renders this table when <see cref="Items"/> raises <see cref="INotifyCollectionChanged.CollectionChanged"/>.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to <c>false</c>.  When <c>true</c> and <see cref="Items"/> implements <see cref="INotifyCollectionChanged"/>
+        /// (such as <c>ObservableCollection&lt;T&gt;</c>), adding, removing or replacing items refreshes the table without
+        /// reassigning <see cref="Items"/> or calling <c>StateHasChanged</c>.  Bursts of changes are coalesced into one render.
+        /// The event may be raised on any thread; the render is dispatched to the component's synchronization context.
+        /// Has no effect when <see cref="ServerData"/> is set.
+        /// </remarks>
+        [Parameter]
+        [Category(CategoryTypes.Table.Behavior)]
+        public bool AutoReloadOnCollectionChanged { get; set; }
+
+        /// <summary>
+        /// Re-renders this table when an item in <see cref="Items"/> raises <see cref="INotifyPropertyChanged.PropertyChanged"/>.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to <c>false</c>.  When <c>true</c>, every item implementing <see cref="INotifyPropertyChanged"/> is observed;
+        /// items added to or removed from an <see cref="INotifyCollectionChanged"/> source are tracked automatically.
+        /// Bursts of changes are coalesced into one render.  Has no effect when <see cref="ServerData"/> is set.
+        /// </remarks>
+        [Parameter]
+        [Category(CategoryTypes.Table.Behavior)]
+        public bool AutoReloadOnItemPropertyChanged { get; set; }
 
         /// <summary>
         /// The function which determines whether an item should be displayed.
@@ -918,6 +952,156 @@ namespace MudBlazor
             return "";
         }
 
+        /// <inheritdoc/>
+        protected override void OnParametersSet()
+        {
+            base.OnParametersSet();
+            UpdateAutoReloadSubscriptions();
+        }
+
+        //AUTO RELOAD (INotifyCollectionChanged / INotifyPropertyChanged):
+
+        /// <summary>
+        /// Aligns the collection and item subscriptions with the current <see cref="Items"/> and the two AutoReload parameters.
+        /// Idempotent; safe to call on every parameter set.
+        /// </summary>
+        private void UpdateAutoReloadSubscriptions()
+        {
+            // Item tracking also needs the collection subscription to learn about added/removed items.
+            var wanted = !HasServerData && (AutoReloadOnCollectionChanged || AutoReloadOnItemPropertyChanged)
+                ? _items as INotifyCollectionChanged
+                : null;
+
+            if (!ReferenceEquals(_observedCollection, wanted))
+            {
+                if (_observedCollection is not null)
+                {
+                    _observedCollection.CollectionChanged -= OnObservedCollectionChanged;
+                }
+
+                _observedCollection = wanted;
+
+                if (wanted is not null)
+                {
+                    wanted.CollectionChanged += OnObservedCollectionChanged;
+                }
+            }
+
+            ResyncItemSubscriptions();
+        }
+
+        /// <summary>
+        /// Subscribes to items now present and unsubscribes from items no longer present.  Enumerates <see cref="Items"/> once;
+        /// must run on the component's synchronization context.
+        /// </summary>
+        private void ResyncItemSubscriptions()
+        {
+            if (_disposed || HasServerData || !AutoReloadOnItemPropertyChanged || _items is null)
+            {
+                UnsubscribeAllItems();
+                return;
+            }
+
+            var current = new HashSet<INotifyPropertyChanged>(ReferenceEqualityComparer.Instance);
+            foreach (var item in _items)
+            {
+                if (item is INotifyPropertyChanged observable)
+                {
+                    current.Add(observable);
+                }
+            }
+
+            _observedItems.RemoveWhere(item =>
+            {
+                if (current.Contains(item))
+                {
+                    return false;
+                }
+
+                item.PropertyChanged -= OnObservedItemPropertyChanged;
+                return true;
+            });
+
+            foreach (var item in current)
+            {
+                if (_observedItems.Add(item))
+                {
+                    item.PropertyChanged += OnObservedItemPropertyChanged;
+                }
+            }
+        }
+
+        private void UnsubscribeAllItems()
+        {
+            foreach (var item in _observedItems)
+            {
+                item.PropertyChanged -= OnObservedItemPropertyChanged;
+            }
+
+            _observedItems.Clear();
+        }
+
+        private void OnObservedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            // May arrive on any thread.  All work (item resync, render) is coalesced onto the dispatcher.
+            if (AutoReloadOnItemPropertyChanged)
+            {
+                Volatile.Write(ref _autoReloadResync, 1);
+            }
+
+            if (AutoReloadOnCollectionChanged)
+            {
+                Volatile.Write(ref _autoReloadRender, 1);
+            }
+
+            ScheduleAutoReload();
+        }
+
+        private void OnObservedItemPropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (AutoReloadOnItemPropertyChanged)
+            {
+                Volatile.Write(ref _autoReloadRender, 1);
+            }
+
+            ScheduleAutoReload();
+        }
+
+        /// <summary>
+        /// Runs one auto-reload pass on the next dispatcher turn for any number of notifications that arrive before it.
+        /// Deferring past the current turn is what coalesces a synchronous burst of changes into a single render.
+        /// </summary>
+        private void ScheduleAutoReload()
+        {
+            if (_disposed || Interlocked.CompareExchange(ref _autoReloadScheduled, 1, 0) != 0)
+            {
+                return;
+            }
+
+            InvokeAsync(async () =>
+            {
+                await Task.Yield();
+                // Clear first: notifications raised from here on schedule the next pass.
+                Interlocked.Exchange(ref _autoReloadScheduled, 0);
+                var resync = Interlocked.Exchange(ref _autoReloadResync, 0) == 1;
+                var render = Interlocked.Exchange(ref _autoReloadRender, 0) == 1;
+                if (_disposed)
+                {
+                    return;
+                }
+
+                if (resync)
+                {
+                    ResyncItemSubscriptions();
+                }
+
+                if (render)
+                {
+                    StateHasChanged();
+                }
+            });
+        }
+
         /// <summary>
         /// Releases resources used by this table.
         /// </summary>
@@ -929,6 +1113,15 @@ namespace MudBlazor
 
         protected virtual void Dispose(bool disposing)
         {
+            _disposed = true;
+            if (_observedCollection is not null)
+            {
+                _observedCollection.CollectionChanged -= OnObservedCollectionChanged;
+                _observedCollection = null;
+            }
+
+            UnsubscribeAllItems();
+
             try
             {
                 _cancellationTokenSrc?.Cancel();
