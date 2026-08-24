@@ -13,7 +13,7 @@
     <PackageId>ModelingEvolution.MudBlazor</PackageId>
     <AssemblyName>MudBlazor</AssemblyName>
     <RootNamespace>MudBlazor</RootNamespace>
-    <StaticWebAssetBasePath>MudBlazor</StaticWebAssetBasePath>
+    <StaticWebAssetBasePath>_content/MudBlazor</StaticWebAssetBasePath>
   </PropertyGroup>
   <PropertyGroup>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
