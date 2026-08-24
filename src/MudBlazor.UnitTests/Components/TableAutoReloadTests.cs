@@ -73,26 +73,65 @@ namespace MudBlazor.UnitTests.Components
         }
 
         [Test]
-        public void ItemPropertyChanged_On_TracksItemsAddedAndRemovedLater()
+        public void ItemPropertyChanged_On_ObservesOnlyRenderedRows_AndFollowsRowLifecycle()
         {
-            var comp = Context.Render<TableAutoReloadTest>(p => p.Add(x => x.AutoReloadOnItemPropertyChanged, true));
+            var comp = Context.Render<TableAutoReloadTest>(p => p
+                .Add(x => x.AutoReloadOnCollectionChanged, true)
+                .Add(x => x.AutoReloadOnItemPropertyChanged, true));
             var source = comp.Instance.Source;
-            source.SubscriberCount.Should().Be(1, "item tracking needs the collection event to follow adds/removes");
 
+            // A row exists per item on the page → each is observed once.
+            source.Should().OnlyContain(i => i.SubscriberCount == 1);
+
+            // Added item: observed as soon as its row renders …
             var added = new TableAutoReloadTest.Item("d");
             source.Add(added);
             comp.WaitForAssertion(() => added.SubscriberCount.Should().Be(1));
-
-            // Collection tracking is only for bookkeeping here — the add itself did not re-render (flag is off) …
-            RowCount(comp).Should().Be(3);
-            // … but a property change on the new item does, and the new row shows up with it.
             added.Name = "d2";
             comp.WaitForAssertion(() => comp.Markup.Should().Contain("d2"));
-            RowCount(comp).Should().Be(4);
 
+            // … removed item: its row is disposed and the subscription goes with it.
             var removed = source[0];
             source.RemoveAt(0);
             comp.WaitForAssertion(() => removed.SubscriberCount.Should().Be(0));
+            RowCount(comp).Should().Be(3);
+        }
+
+        [Test]
+        public void ItemPropertyChanged_On_RerendersOnlyThatRow()
+        {
+            var comp = Context.Render<TableAutoReloadTest>(p => p.Add(x => x.AutoReloadOnItemPropertyChanged, true));
+            var rows = comp.FindComponents<MudTr>();
+            Thread.Sleep(200);                       // let the table finish its own post-render settling
+            var before = rows.Select(r => r.RenderCount).ToArray();
+
+            comp.Instance.Source[2].Name = "only-me";
+            comp.WaitForAssertion(() => comp.Markup.Should().Contain("only-me"));
+
+            // bUnit bumps RenderCount on every ancestor whose markup changed, so the table's count is not
+            // evidence either way; sibling rows are — they must not have been rendered again.
+            rows[0].RenderCount.Should().Be(before[0]);
+            rows[1].RenderCount.Should().Be(before[1]);
+            rows[2].RenderCount.Should().BeGreaterThan(before[2]);
+        }
+
+        [Test]
+        public void ItemPropertyChanged_Burst_IsCoalescedPerRow()
+        {
+            var comp = Context.Render<TableAutoReloadTest>(p => p.Add(x => x.AutoReloadOnItemPropertyChanged, true));
+            var item = comp.Instance.Source[0];
+            var renders = comp.RenderCount;
+
+            comp.InvokeAsync(() =>
+            {
+                for (var i = 0; i < 500; i++)
+                {
+                    item.Name = $"n{i}";
+                }
+            });
+
+            comp.WaitForAssertion(() => comp.Markup.Should().Contain("n499"));
+            (comp.RenderCount - renders).Should().BeLessThan(10);
         }
 
         [Test]
@@ -165,6 +204,22 @@ namespace MudBlazor.UnitTests.Components
             source.Should().OnlyContain(i => i.SubscriberCount == 0);
             var act = () => { source.Add(new TableAutoReloadTest.Item("late")); source[0].Name = "late"; };
             act.Should().NotThrow();
+        }
+
+        [Test]
+        public void Clear_DisposesRows_AndReleasesItemSubscriptions()
+        {
+            var comp = Context.Render<TableAutoReloadTest>(p => p
+                .Add(x => x.AutoReloadOnCollectionChanged, true)
+                .Add(x => x.AutoReloadOnItemPropertyChanged, true));
+            var source = comp.Instance.Source;
+            var items = source.ToList();
+            items.Should().OnlyContain(i => i.SubscriberCount == 1);
+
+            source.Clear();   // Reset: no OldItems — the row lifecycle, not event args, releases the subscriptions
+
+            comp.WaitForAssertion(() => RowCount(comp).Should().Be(0));
+            comp.WaitForAssertion(() => items.Should().OnlyContain(i => i.SubscriberCount == 0));
         }
     }
 }
