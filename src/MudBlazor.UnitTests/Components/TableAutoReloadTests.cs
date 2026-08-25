@@ -1,4 +1,4 @@
-using AwesomeAssertions;
+﻿using AwesomeAssertions;
 using Bunit;
 using MudBlazor.UnitTests.TestComponents.Table;
 using NUnit.Framework;
