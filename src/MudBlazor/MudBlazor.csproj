@@ -6,6 +6,15 @@
     <EnumGenerator_ForceInternal>true</EnumGenerator_ForceInternal>
   </PropertyGroup>
 
+  <!-- ModelingEvolution fork: published as ModelingEvolution.MudBlazor, a drop-in for MudBlazor.
+       Assembly name, root namespace and the static-asset base path (_content/MudBlazor/) stay
+       "MudBlazor" so consumers swap ONE PackageReference and change nothing else. -->
+  <PropertyGroup>
+    <PackageId>ModelingEvolution.MudBlazor</PackageId>
+    <AssemblyName>MudBlazor</AssemblyName>
+    <RootNamespace>MudBlazor</RootNamespace>
+    <StaticWebAssetBasePath>_content/MudBlazor</StaticWebAssetBasePath>
+  </PropertyGroup>
   <PropertyGroup>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageIcon>Nuget.png</PackageIcon>
@@ -13,10 +22,10 @@
     <Authors>Garderoben, Henon and Contributors</Authors>
     <Copyright>Copyright 2026 MudBlazor</Copyright>
     <PackageTags>Blazor, MudBlazor, Material, Material Design, Components, Blazor Components, Blazor Library</PackageTags>
-    <Description>Blazor Component Library based on Material Design principles with an emphasis on ease of use and extensibility</Description>
+    <Description>ModelingEvolution fork of MudBlazor (drop-in, same namespaces and asset paths). Adds MudTable.AutoReloadOnCollectionChanged / AutoReloadOnItemPropertyChanged. Upstream: https://github.com/MudBlazor/MudBlazor</Description>
     <PackageProjectUrl>https://mudblazor.com/</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <RepositoryUrl>https://github.com/MudBlazor/MudBlazor</RepositoryUrl>
+    <RepositoryUrl>https://github.com/modelingevolution/MudBlazor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
   </PropertyGroup>
   
@@ -44,6 +53,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="buildTransitive\ModelingEvolution.MudBlazor.targets" Pack="true" PackagePath="buildTransitive\" />
     <None Include="..\..\LICENSE" Pack="true" Visible="false" PackagePath="" />
     <None Include="..\..\README.md" Pack="true" Visible="false" PackagePath="" />
     <None Include="..\..\content\Nuget.png" Pack="true" Visible="false" PackagePath="" />

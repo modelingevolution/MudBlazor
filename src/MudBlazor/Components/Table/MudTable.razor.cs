@@ -1,4 +1,6 @@
-﻿using System.Diagnostics.CodeAnalysis;
+﻿using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.JSInterop;
@@ -30,6 +32,9 @@ namespace MudBlazor
         private bool _currentRenderFilteredItemsCached;
         private CancellationTokenSource? _cancellationTokenSrc;
         private TableData<T> _serverData = new() { TotalItems = 0, Items = [] };
+        private INotifyCollectionChanged? _observedCollection;
+        private int _autoReloadPending;
+        private bool _disposed;
 
         [MemberNotNullWhen(true, nameof(_preEditSort))]
         private bool HasPreEditSort => _preEditSort is not null;
@@ -239,6 +244,33 @@ namespace MudBlazor
                 }
             }
         }
+
+        /// <summary>
+        /// Re-renders this table when <see cref="Items"/> raises <see cref="INotifyCollectionChanged.CollectionChanged"/>.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to <c>false</c>.  When <c>true</c> and <see cref="Items"/> implements <see cref="INotifyCollectionChanged"/>
+        /// (such as <c>ObservableCollection&lt;T&gt;</c>), adding, removing or replacing items refreshes the table without
+        /// reassigning <see cref="Items"/> or calling <c>StateHasChanged</c>.  Bursts of changes are coalesced into one render.
+        /// The event may be raised on any thread; the render is dispatched to the component's synchronization context.
+        /// Has no effect when <see cref="ServerData"/> is set.
+        /// </remarks>
+        [Parameter]
+        [Category(CategoryTypes.Table.Behavior)]
+        public bool AutoReloadOnCollectionChanged { get; set; }
+
+        /// <summary>
+        /// Re-renders this table when an item in <see cref="Items"/> raises <see cref="INotifyPropertyChanged.PropertyChanged"/>.
+        /// </summary>
+        /// <remarks>
+        /// Defaults to <c>false</c>.  When <c>true</c>, each rendered row observes its own item for as long as the row exists
+        /// (rows are keyed on the item), and a change re-renders that row only.  Items not currently rendered — other pages,
+        /// outside the virtualized window — are not observed, so cost is bounded by visible rows, not by the collection.
+        /// Bursts of changes are coalesced into one render per row.
+        /// </remarks>
+        [Parameter]
+        [Category(CategoryTypes.Table.Behavior)]
+        public bool AutoReloadOnItemPropertyChanged { get; set; }
 
         /// <summary>
         /// The function which determines whether an item should be displayed.
@@ -918,6 +950,70 @@ namespace MudBlazor
             return "";
         }
 
+        /// <inheritdoc/>
+        protected override void OnParametersSet()
+        {
+            base.OnParametersSet();
+            UpdateAutoReloadSubscriptions();
+        }
+
+        //AUTO RELOAD (INotifyCollectionChanged; per-item INotifyPropertyChanged lives in MudTableObservedRow<T>):
+
+        /// <summary>
+        /// Wraps one row in a <see cref="MudTableObservedRow{T}"/> scope keyed on the item.  Rendered from code because
+        /// the component is internal and Razor tag syntax only discovers public component types.
+        /// </summary>
+        private RenderFragment ObservedRow(T item, RenderFragment content) => builder =>
+        {
+            builder.OpenComponent<MudTableObservedRow<T>>(0);
+            builder.SetKey(item);
+            builder.AddComponentParameter(1, nameof(MudTableObservedRow<T>.Item), item);
+            builder.AddComponentParameter(2, nameof(MudTableObservedRow<T>.Enabled), AutoReloadOnItemPropertyChanged);
+            builder.AddComponentParameter(3, nameof(MudTableObservedRow<T>.ChildContent), content);
+            builder.CloseComponent();
+        };
+
+        private void UpdateAutoReloadSubscriptions()
+        {
+            var wanted = !HasServerData && AutoReloadOnCollectionChanged ? _items as INotifyCollectionChanged : null;
+            if (ReferenceEquals(_observedCollection, wanted))
+            {
+                return;
+            }
+
+            if (_observedCollection is not null)
+            {
+                _observedCollection.CollectionChanged -= OnObservedCollectionChanged;
+            }
+
+            _observedCollection = wanted;
+
+            if (wanted is not null)
+            {
+                wanted.CollectionChanged += OnObservedCollectionChanged;
+            }
+        }
+
+        private void OnObservedCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            // May arrive on any thread.  Render on the next dispatcher turn, once for any number of notifications
+            // that arrive before it — deferring past the current turn is what coalesces a synchronous burst.
+            if (_disposed || Interlocked.CompareExchange(ref _autoReloadPending, 1, 0) != 0)
+            {
+                return;
+            }
+
+            InvokeAsync(async () =>
+            {
+                await Task.Yield();
+                Interlocked.Exchange(ref _autoReloadPending, 0);
+                if (!_disposed)
+                {
+                    StateHasChanged();
+                }
+            });
+        }
+
         /// <summary>
         /// Releases resources used by this table.
         /// </summary>
@@ -929,6 +1025,13 @@ namespace MudBlazor
 
         protected virtual void Dispose(bool disposing)
         {
+            _disposed = true;
+            if (_observedCollection is not null)
+            {
+                _observedCollection.CollectionChanged -= OnObservedCollectionChanged;
+                _observedCollection = null;
+            }
+
             try
             {
                 _cancellationTokenSrc?.Cancel();

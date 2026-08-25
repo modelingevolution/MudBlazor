@@ -1,0 +1,59 @@
+# ModelingEvolution fork: publishes ModelingEvolution.MudBlazor on tags "me/X.Y.Z[.N]".
+# Upstream's deploy-mudblazor-nuget.yml fires on "v*" tags only, so the two never collide.
+name: publish-me-nuget
+
+on:
+  push:
+    tags:
+      - "me/[0-9]+.[0-9]+.[0-9]+*"
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#me/}" >> $GITHUB_OUTPUT
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        working-directory: src/MudBlazor
+        run: dotnet restore
+
+      - name: Pack
+        working-directory: src/MudBlazor
+        run: dotnet pack -c Release --no-restore --output nupkgs /p:Version=${{ steps.version.outputs.VERSION }}
+
+      - name: Check package contains css
+        shell: pwsh
+        run: ./tools/CheckPackageContainsStaticAssets.ps1 ./src/MudBlazor/nupkgs MudBlazor.min.css
+
+      - name: Check package contains js
+        shell: pwsh
+        run: ./tools/CheckPackageContainsStaticAssets.ps1 ./src/MudBlazor/nupkgs MudBlazor.min.js
+
+      - name: Push to ModelingEvolution NuGet
+        working-directory: src/MudBlazor
+        run: |
+          dotnet nuget push nupkgs/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY_ME }} \
+            --source https://nuget.modelingevolution.com/v3/index.json \
+            --skip-duplicate
+        continue-on-error: true
+
+      - name: Push to NuGet.org
+        working-directory: src/MudBlazor
+        run: |
+          dotnet nuget push nupkgs/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ModelingEvolution.MudBlazor is a drop-in for the upstream MudBlazor package: same assembly name (MudBlazor.dll), same
+  namespaces, same static-asset path (_content/MudBlazor). A consumer that ALSO receives the upstream package — almost
+  always transitively, through a library such as MudBlazor.Markdown or Extensions.MudBlazor.StaticInput — would get two
+  MudBlazor.dll and two _content/MudBlazor/MudBlazor.min.css ("Conflicting assets with the same target path").
+
+  This file is imported by every project that references ModelingEvolution.MudBlazor directly OR transitively
+  (buildTransitive), and removes the upstream package's contribution so that exactly one MudBlazor ships: ours.
+  The upstream package stays in the dependency graph (its dependents still resolve); only its assets are dropped.
+  Opt out with <ModelingEvolutionMudBlazorSupersedesUpstream>false</...> in the consuming project.
+-->
+<Project>
+  <PropertyGroup>
+    <ModelingEvolutionMudBlazorSupersedesUpstream Condition="'$(ModelingEvolutionMudBlazorSupersedesUpstream)' == ''">true</ModelingEvolutionMudBlazorSupersedesUpstream>
+  </PropertyGroup>
+
+  <!-- Compile-time and runtime assets of the upstream package: resolved by ResolvePackageAssets from project.assets.json. -->
+  <Target Name="_MeMudBlazorDropUpstreamPackageAssets"
+          AfterTargets="ResolvePackageAssets"
+          Condition="'$(ModelingEvolutionMudBlazorSupersedesUpstream)' == 'true'">
+    <ItemGroup>
+      <ResolvedCompileFileDefinitions Remove="@(ResolvedCompileFileDefinitions)" Condition="'%(ResolvedCompileFileDefinitions.NuGetPackageId)' == 'MudBlazor'" />
+      <RuntimeCopyLocalItems Remove="@(RuntimeCopyLocalItems)" Condition="'%(RuntimeCopyLocalItems.NuGetPackageId)' == 'MudBlazor'" />
+      <ResourceCopyLocalItems Remove="@(ResourceCopyLocalItems)" Condition="'%(ResourceCopyLocalItems.NuGetPackageId)' == 'MudBlazor'" />
+      <RuntimeTargetsCopyLocalItems Remove="@(RuntimeTargetsCopyLocalItems)" Condition="'%(RuntimeTargetsCopyLocalItems.NuGetPackageId)' == 'MudBlazor'" />
+      <ResolvedAnalyzers Remove="@(ResolvedAnalyzers)" Condition="'%(ResolvedAnalyzers.NuGetPackageId)' == 'MudBlazor'" />
+    </ItemGroup>
+  </Target>
+
+  <!-- Static web assets of the upstream package: declared as StaticWebAsset items by its build/*.props at evaluation
+       time (SourceId = the package id); drop them before the SWA pipeline resolves inputs and detects the conflict. -->
+  <Target Name="_MeMudBlazorDropUpstreamStaticWebAssets"
+          BeforeTargets="ResolveStaticWebAssetsInputs;ResolveStaticWebAssetsConfiguration;ResolveReferencedProjectsStaticWebAssets;ResolveProjectStaticWebAssets"
+          Condition="'$(ModelingEvolutionMudBlazorSupersedesUpstream)' == 'true'">
+    <ItemGroup>
+      <StaticWebAsset Remove="@(StaticWebAsset)" Condition="'%(StaticWebAsset.SourceId)' == 'MudBlazor'" />
+      <StaticWebAssetEndpoint Remove="@(StaticWebAssetEndpoint)" Condition="'%(StaticWebAssetEndpoint.AssetFile)' != '' And $([System.String]::Copy('%(StaticWebAssetEndpoint.AssetFile)').Contains('/mudblazor/'))" />
+    </ItemGroup>
+  </Target>
+</Project>
